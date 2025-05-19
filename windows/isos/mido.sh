@@ -354,32 +354,32 @@ consumer_download() {
     # SKU ID: This specifies the language of the ISO. We always use "English (United States)", however, the SKU for this changes with each Windows release
     # We must make this request so our next one will be allowed
     # --data "" is required otherwise no "Content-Length" header will be sent causing HTTP response "411 Length Required"
-    language_skuid_table_html="$(curl --request POST --user-agent "$user_agent" --data "" --header "Accept:" --max-filesize 10K --fail --proto =https --tlsv1.2 --http1.1 -- "https://www.microsoft.com/en-US/api/controls/contentinclude/html?pageId=a8f8f489-4c7f-463a-9ca6-5cff94d8d041&host=www.microsoft.com&segments=software-download,$url_segment_parameter&query=&action=getskuinformationbyproductedition&sessionId=$session_id&productEditionId=$product_edition_id&sdVersion=2")" || {
+    language_skuid_table_json="$(curl -s --fail --max-filesize 100K --proto =https --tlsv1.2 --http1.1 "https://www.microsoft.com/software-download-connector/api/getskuinformationbyproductedition?profile=${profile}&ProductEditionId=${product_edition_id}&SKU=undefined&friendlyFileName=undefined&Locale=en-US&sessionID=${session_id}")" || {
         handle_curl_error $?
         return $?
     }
 
     # tr: Filter for only alphanumerics or "-" to prevent HTTP parameter injection
-    sku_id="$(echo "$language_skuid_table_html" | grep "English (United States)" | sed 's/&quot;//g' | cut -d ',' -f 1  | cut -d ':' -f 2 | tr -cd '[:alnum:]-' | head -c 16)"
+    sku_id="$(echo "${language_skuid_table_json}" | jq -r '.Skus[] | select(.LocalizedLanguage=="'"${I18N}"'").Id')"
     [ "$VERBOSE" ] && echo "SKU ID: $sku_id" >&2
 
     # Get ISO download link
     # If any request is going to be blocked by Microsoft it's always this last one (the previous requests always seem to succeed)
     # --referer: Required by Microsoft servers to allow request
-    iso_download_link_html="$(curl --request POST --user-agent "$user_agent" --data "" --referer "$url" --header "Accept:" --max-filesize 100K --fail --proto =https --tlsv1.2 --http1.1 -- "https://www.microsoft.com/en-US/api/controls/contentinclude/html?pageId=6e2a1789-ef16-4f27-a296-74ef7ef5d96b&host=www.microsoft.com&segments=software-download,$url_segment_parameter&query=&action=GetProductDownloadLinksBySku&sessionId=$session_id&skuId=$sku_id&language=English&sdVersion=2")" || {
+    iso_download_link_json="$(curl -s --fail --referer "$url" "https://www.microsoft.com/software-download-connector/api/GetProductDownloadLinksBySku?profile=${profile}&productEditionId=undefined&SKU=${sku_id}&friendlyFileName=undefined&Locale=en-US&sessionID=${session_id}")" || {
         # This should only happen if there's been some change to how this API works
         handle_curl_error $?
         return $?
     }
 
-    if ! [ "$iso_download_link_html" ]; then
+    if ! [ "$iso_download_link_json" ]; then
         # This should only happen if there's been some change to how this API works
         echo_err "Microsoft servers gave us an empty response to our request for an automated download. Please manually download this ISO in a web browser: $url"
         manual_verification="true"
         return 1
     fi
 
-    if echo "$iso_download_link_html" | grep -q "We are unable to complete your request at this time."; then
+    if echo "$iso_download_link_json" | grep -q "We are unable to complete your request at this time."; then
         echo_err "Microsoft blocked the automated download request based on your IP address. Please manually download this ISO in a web browser here: $url"
         manual_verification="true"
         return 1
@@ -388,7 +388,7 @@ consumer_download() {
     # Filter for 64-bit ISO download URL
     # sed: HTML decode "&" character
     # tr: Filter for only alphanumerics or punctuation
-    iso_download_link="$(echo "$iso_download_link_html" | grep -o "https://software.download.prss.microsoft.com.*IsoX64" | cut -d '"' -f 1 | sed 's/&amp;/\&/g' | tr -cd '[:alnum:][:punct:]' | head -c 512)"
+    iso_download_link="$(echo "${iso_download_link_json}" | jq -r '.ProductDownloadOptions[].Uri' | grep x64)"
 
     if ! [ "$iso_download_link" ]; then
         # This should only happen if there's been some change to the download endpoint web address
